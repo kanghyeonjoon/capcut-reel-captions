@@ -1,0 +1,36 @@
+{
+  "about": "소운(soun.journal) 릴스 자막. 레퍼런스: '21살에 1500만원짜리 강의를 결제했습니다'(34만 회). 1027에서 다듬은 값.",
+  "caption": {
+    "y": -0.36,
+    "max_chars": 13,
+    "max_words": 4,
+    "why": "y -0.36은 어깨 높이. 얼굴 바로 밑(-0.24)은 답답하다고 하셨다. 13자(띄어쓰기 포함)를 넘으면 크기 14에서 세로 화면을 넘는다."
+  },
+  "kinds": {
+    "main": {
+      "font": "고딕-Blk",
+      "size": 14.0,
+      "stroke": {"width": 0.08, "color": [0.0, 0.0, 0.0]},
+      "shadow": {"alpha": 0.45, "angle": -45.0, "diffuse": 0.2, "distance": 5.0, "feather": 0.2}
+    },
+    "calm": {
+      "font": "제주명조체",
+      "size": 15.0,
+      "shadow": {"alpha": 0.6, "angle": -45.0, "diffuse": 0.3, "distance": 4.0, "feather": 0.3},
+      "why": "아쉬움·회상 같은 감성 구간만. 레퍼런스의 노을 장면처럼 얇은 글꼴에 테두리 없이 그림자만."
+    }
+  },
+  "color": [1.0, 1.0, 1.0],
+  "highlight": {
+    "color": [0.16, 0.42, 1.0],
+    "regex": "\\d[\\d,.]*\\s?(?:만|천|백|억)?\\s?(?:년|살|원|개월|달|주|일|시간|분|초|%|명|번|개|회|배|등|위|kg|km)?",
+    "why": "레퍼런스는 숫자('1500')만 파란색으로 강조한다."
+  },
+  "title": {"size": 12.0, "y": 0.58, "seconds": 3.0, "kind": "main"},
+  "ending": [
+    {"text": "soun.journal", "size": 12.0, "y": 0.62, "kind": "main", "before_end": 2.5},
+    {"text": "나를 찾아가는 기록", "size": 8.0, "y": 0.45, "kind": "calm", "before_end": 2.3}
+  ],
+  "zoom": {"wide": 1.0, "close": 1.12, "pop": 1.06, "pop_time": 0.18, "calm_push": 1.06},
+  "loudness": {"target_db": -20.0, "max_gain_db": 6.0, "ceiling_db": -3.0}
+}
