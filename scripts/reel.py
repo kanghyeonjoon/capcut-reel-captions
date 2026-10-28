@@ -11,6 +11,7 @@
 """
 import argparse
 import copy
+import difflib
 import glob
 import json
 import os
@@ -21,6 +22,7 @@ import struct
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -31,9 +33,10 @@ FRAME = 0.02  # 소리 크기 한 칸(20ms)
 SENT_END = re.compile(r"[.?!]$")
 # 이 말로 끝나면 다음 말과 붙어 있어야 자연스럽다(꾸미는 말). 줄 끝에 두지 않는다.
 CLINGY = {"그런", "어떤", "이런", "저런", "무슨", "왜", "이", "그", "저", "더", "좀", "좀만", "제", "내", "몇", "한", "두", "세", "안", "못",
-          "잘", "너무", "정말", "진짜", "되게", "다", "또", "그냥", "막", "딱", "꼭", "같은", "어느", "모든", "새", "첫"}
+          "잘", "너무", "정말", "진짜", "되게", "다", "또", "그냥", "막", "딱", "꼭", "같은", "어느", "모든", "새", "첫",
+          "전혀", "결코", "절대", "아무리", "단", "나", "가장", "너무나", "그저", "오직", "최소한", "훨씬"}
 # 이 말로 끝나면 줄을 끊기 좋다(이어 주는 끝).
-LINKING = ("는데", "은데", "지만", "니까", "면서", "려고", "도록", "라고", "다고", "는지", "고", "서", "면", "며", "자")
+LINKING = ("는데", "은데", "지만", "니까", "면서", "려고", "도록", "라고", "다고", "는지", "고", "서", "면", "며", "자", "뿐")
 # 앞말에 기대는 보조 용언. 줄 첫머리에 두지 않는다('알고 / 나서', '설명해야 / 될지').
 # 의존 명사('5년 / 동안')도 앞말과 한 덩어리라 줄 첫머리에 두지 않는다.
 AUX = ("나서", "싶", "있었", "있어", "있는", "보니", "버리", "버렸", "될지", "되었", "됐", "하는지", "주는", "줬",
@@ -228,6 +231,9 @@ def phrases(words, env, thr, pause):
                 longest = max(longest, run)
             # 꾸미는 말 뒤에서 머뭇거린 것('왜 그런... 상황에서')은 끊지 않는다
             brk = longest * FRAME >= pause and clean(w["t"]) not in CLINGY
+            # 짧은 낱말 하나만 남는 줄("세금 / 내는 법")은 깜빡 지나가니, 머뭇거렸어도 다음 말과 붙인다
+            if brk and len(cur) == 1 and len(clean(w["t"])) <= 3:
+                brk = False
         if brk:
             out.append(cur)
             cur = []
@@ -267,6 +273,34 @@ def split_phrase(ph, cap):
         lines.append(ph[back[i]:i])
         i = back[i]
     return lines[::-1]
+
+
+def norm(t):
+    return re.sub(r"[^가-힣0-9A-Za-z]", "", t)
+
+
+def align_script(words, script):
+    """대본 글이 있으면 받아쓰기 낱말 대신 대본 낱말을 쓴다. 잘못 들은 말·띄어쓰기를 바로잡고, 대본의 마침표·쉼표로
+    줄을 나눌 수 있게 된다. 시각은 받아쓰기에서 가져온다(차례대로 맞추고, 받아쓰기가 놓친 낱말은 앞뒤 사이에 끼운다)."""
+    C = [w for w in script.split() if norm(w)]
+    sm = difflib.SequenceMatcher(None, [norm(w["t"]) for w in words], [norm(w) for w in C], autojunk=False)
+    times = [None] * len(C)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op in ("equal", "replace"):
+            for k in range(j1, j2):
+                pos = (k - j1) * (i2 - i1) / (j2 - j1)
+                w = words[i1 + int(pos)]
+                times[k] = (w["s"] + (pos - int(pos)) * (end_guess(w) - w["s"]), w["cut"])
+    out = []
+    for k, w in enumerate(C):
+        if times[k] is None:  # 받아쓰기가 놓친 낱말: 앞 낱말과 뒤 낱말 사이
+            prev = next((times[j] for j in range(k - 1, -1, -1) if times[j]), (0.0, words[0]["cut"]))
+            nxt = next((times[j] for j in range(k + 1, len(C)) if times[j]), (prev[0] + 0.4, prev[1]))
+            times[k] = ((prev[0] + nxt[0]) / 2, prev[1])
+        out.append({"t": " " + w, "s": round(times[k][0], 3), "cut": times[k][1]})
+    for i, w in enumerate(out):
+        w["e"] = out[i + 1]["s"] if i + 1 < len(out) else w["s"] + 0.15 * syllables(w["t"]) + 0.1
+    return out
 
 
 def cmd_plan(a):
@@ -320,6 +354,10 @@ def cmd_plan(a):
             volume = round(10 ** (gain / 20), 2)
         say("말소리 가운데 %.1fdB, 가장 큰 곳 %.1fdB → %s" % (med, top, "%.1fdB 키움(volume %.2f)" % (gain, volume) if volume else "그대로"))
 
+    if a.script:
+        words = align_script(words, open(a.script, encoding="utf-8").read())
+        say("자막 글은 대본 글로 씀: %s" % a.script)
+
     lines = []
     for ph in phrases(words, env, thr, a.pause):
         lines += split_phrase(ph, cap)
@@ -342,13 +380,13 @@ def cmd_plan(a):
         del l["_last"]
 
     t = style["title"]
-    titles = [{"text": "", "start": 0.0, "end": t["seconds"], "size": t["size"], "y": t["y"], "kind": t["kind"],
+    titles = [{"text": "", "start": 0.0, "end": round(min(t["seconds"], total), 2), "size": t["size"], "y": t["y"], "kind": t["kind"],
                "note": "첫 화면 제목: 영상 속 본인 말에서 따온 한두 줄(\\n으로 줄바꿈). 비워 두면 넣지 않는다."}]
     for e in style.get("ending", []):
         titles.append({"text": e["text"], "start": round(total - e["before_end"], 2), "end": round(total, 2), "size": e["size"],
                        "y": e["y"], "kind": e["kind"]})
     plan = {"project": os.path.basename(folder), "folder": folder, "style": a.style, "duration": round(total, 3),
-            "volume": volume, "zoom": True, "calm_cuts": sorted(calm), "lines": out, "titles": titles, "checks": checks}
+            "volume": volume, "zoom": style.get("zoom_default", True), "sound_effects": True, "calm_cuts": sorted(calm), "lines": out, "titles": titles, "checks": checks}
     path = os.path.join(work, "plan.json")
     if os.path.exists(path) and not a.force:
         path = os.path.join(work, "plan_새초안.json")
@@ -480,6 +518,50 @@ def scale_keyframes(seg, speed, points):
         for prop in ("KFTypeScaleX", "KFTypeScaleY")]
 
 
+_sfx_cache = {}
+
+
+def find_sfx(name, prefer):
+    """그 효과음을 쓴 캡컷 프로젝트(이 프로젝트 먼저, 그다음 최근 것부터)에서 소리 조각과 재료를 찾는다."""
+    if name in _sfx_cache:
+        return _sfx_cache[name]
+    folders = [prefer] + sorted(glob.glob(os.path.join(DRAFTS, "*")), key=lambda f: -os.path.getmtime(f))
+    for f in folders:
+        try:
+            d = load(f)
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        by = index(d)
+        for t in d["tracks"]:
+            for s in t["segments"] if t["type"] == "audio" else []:
+                kind, m = by.get(s["material_id"], ("", {}))
+                if kind == "audios" and unicodedata.normalize("NFC", m.get("name") or "") == unicodedata.normalize("NFC", name) \
+                        and os.path.exists(m.get("path", "")):
+                    _sfx_cache[name] = {"seg": s, "mats": [(kind, m)] + [by[r] for r in s["extra_material_refs"] if r in by],
+                                        "track": {k: v for k, v in t.items() if k != "segments"}}
+                    return _sfx_cache[name]
+    say("효과음 '%s'을 찾지 못해 건너뜁니다. 캡컷에서 그 효과음을 한 번 써 두면 다음부터 찾습니다." % name)
+    _sfx_cache[name] = None
+    return None
+
+
+def new_sfx(info, got, at, max_seconds, volume, total):
+    s = copy.deepcopy(got["seg"])
+    s["id"] = nid()
+    mids = []
+    for kind, m in got["mats"]:
+        x = dict(copy.deepcopy(m), id=nid())
+        info["materials"].setdefault(kind, []).append(x)
+        mids.append(x["id"])
+    s["material_id"], s["extra_material_refs"] = mids[0], mids[1:]
+    dur = got["mats"][0][1].get("duration", 500000) / 1e6
+    dur = min(dur, max_seconds or dur, total - at)
+    s["target_timerange"] = {"start": us(at), "duration": us(at + dur) - us(at)}
+    s["source_timerange"] = {"start": 0, "duration": us(dur)}
+    s["volume"], s["common_keyframes"], s["speed"] = volume, [], 1.0
+    return s, mids
+
+
 def check_lines(plan, total):
     """겹침·길이·글자 수를 확인하고 고친다. 문제는 알려 준다."""
     probs = []
@@ -564,6 +646,41 @@ def cmd_apply(a):
     for ln in lanes:
         add_track(ln)
 
+    # 효과음: 첫 화면 제목에 휙, 강조 줄("emphasis": true)에 띵, 마지막 글에 딸깍. plan의 "sfx"로 더 넣을 수 있다.
+    if plan.get("sound_effects", True) and style.get("sfx"):
+        fx = style["sfx"]
+        shown = sorted([t for t in plan.get("titles", []) if t["text"].strip()], key=lambda t: t["start"])
+        marks = []
+        if shown and shown[0]["start"] < 1.0 and "title" in fx:
+            marks.append(dict(fx["title"], at=shown[0]["start"]))
+        endings = [t for t in shown if t["start"] > 1.0]
+        if endings and "ending" in fx:
+            marks.append(dict(fx["ending"], at=endings[0]["start"]))
+        marks += [dict(fx["emphasis"], at=l["start"]) for l in plan["lines"] if l.get("emphasis") and "emphasis" in fx]
+        marks += plan.get("sfx", [])
+        sfx_lanes = []
+        for mk in sorted(marks, key=lambda m: m["at"]):
+            got = find_sfx(mk["name"], folder)
+            if not got:
+                continue
+            s, mids = new_sfx(info, got, mk["at"], mk.get("max_seconds"), mk.get("volume", 0.5), total)
+            rec_new["materials"] += mids
+            lane = next((ln for ln in sfx_lanes if ln[-1]["target_timerange"]["start"] + ln[-1]["target_timerange"]["duration"]
+                         <= s["target_timerange"]["start"]), None)
+            if lane is None:
+                sfx_lanes.append([s])
+                lane_track = got["track"]
+            else:
+                lane.append(s)
+        for ln in sfx_lanes:
+            tr = dict(copy.deepcopy(lane_track), id=nid(), segments=ln)
+            for s in ln:
+                s["track_render_index"] = len(info["tracks"])
+            info["tracks"].append(tr)
+            rec_new["tracks"].append(tr["id"])
+        if marks:
+            say("효과음 %d개" % sum(len(ln) for ln in sfx_lanes))
+
     # 컷마다 넓게/가깝게 번갈아 + 첫 순간 살짝 크게, 감성 컷은 천천히 다가감. 소리 키우기.
     # 사람이 손댄 컷(이미 확대·키프레임·소리를 바꾼 컷)은 그대로 둔다.
     z = style["zoom"]
@@ -572,7 +689,9 @@ def cmd_apply(a):
     for c in cuts_of(info, index(info)):
         s, mine = c["seg"], rec["cuts"].get(c["seg"]["id"], {})
         clip = s.get("clip") or {}
-        touched = (s.get("common_keyframes") or abs((clip.get("scale") or {}).get("x", 1.0) - 1.0) > 1e-6) and not mine.get("zoom")
+        # 키프레임이 있으면 사람이 움직임을 넣은 컷이다. 확대만 되어 있으면(가로 영상을 세로로 채운 것 등) 화면 맞춤으로 보고 그 위에 곱한다.
+        touched = bool(s.get("common_keyframes")) and not mine.get("zoom")
+        frame = mine.get("frame") or (clip.get("scale") or {}).get("x", 1.0)
         r = {}
         if plan.get("zoom") and not touched:
             dur = (c["t1"] - c["t0"])
@@ -581,9 +700,9 @@ def cmd_apply(a):
             else:
                 base = z["wide"] if c["n"] % 2 else z["close"]
                 pts = [(0.0, base * z["pop"]), (min(z["pop_time"], dur / 2), base), (dur, base)]
-            s["clip"] = dict(clip, scale={"x": base, "y": base})
-            s["common_keyframes"] = scale_keyframes(s, c["speed"], pts)
-            r["zoom"] = True
+            s["clip"] = dict(clip, scale={"x": base * frame, "y": base * frame})
+            s["common_keyframes"] = scale_keyframes(s, c["speed"], [(o, v * frame) for o, v in pts])
+            r.update(zoom=True, frame=frame)
         elif plan.get("zoom"):
             skipped.append(c["n"])
         if plan.get("volume") and (abs(s.get("volume", 1.0) - 1.0) < 1e-6 or "volume" in mine):
@@ -625,6 +744,7 @@ def main():
             p.add_argument("--calm-cuts", default="", help="감성 구간 컷 번호(쉼표로). 명조 글꼴 + 천천히 다가감")
             p.add_argument("--pause", type=float, default=0.3, help="이만큼(초) 소리가 끊기면 줄을 나눈다")
             p.add_argument("--force", action="store_true", help="plan.json을 덮어쓴다")
+            p.add_argument("--script", help="말한 대본 글 파일. 있으면 자막 글을 대본 글로 쓴다(시각은 받아쓰기)")
         if name == "apply":
             p.add_argument("--plan")
             p.add_argument("--dry", action="store_true")

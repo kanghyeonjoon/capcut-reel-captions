@@ -1,0 +1,40 @@
+{
+  "about": "위아래 검은 띠 + 가운데 가로 영상 형식(소운 1028 릴스). 레퍼런스: 찬호의 생각(@chanhoo.chung) 릴스. 짧은 제목이 영상 바로 위에 끝까지 떠 있고, 자막은 영상 바로 아래 검은 띠에 나온다. 가로로 찍은 말하기 영상에 쓴다.",
+  "caption": {
+    "y": -0.48,
+    "max_chars": 13,
+    "max_words": 4,
+    "why": "영상 띠(화면 높이의 약 38%, 가운데) 바로 아래. 얼굴을 가리지 않는다."
+  },
+  "kinds": {
+    "main": {
+      "font": "고딕-Blk",
+      "size": 13.0,
+      "stroke": {"width": 0.06, "color": [0.0, 0.0, 0.0]}
+    },
+    "calm": {
+      "font": "제주명조체",
+      "size": 14.0,
+      "why": "감성 구간. 검은 띠 위라 그림자 없이 깔끔하게."
+    }
+  },
+  "color": [1.0, 1.0, 1.0],
+  "highlight": {
+    "color": [0.16, 0.42, 1.0],
+    "regex": "\\d[\\d,.]*\\s?(?:만|천|백|억)?\\s?(?:년|살|원|개월|달|주|일|시간|분|초|%|명|번|개|회|배|등|위|kg|km)?"
+  },
+  "title": {"size": 17.0, "y": 0.5, "seconds": 999, "kind": "main",
+            "why": "레퍼런스처럼 짧은 제목(2~8자)을 영상 바로 위에 끝까지 둔다."},
+  "ending": [
+    {"text": "soun.journal", "size": 11.0, "y": 0.82, "kind": "main", "before_end": 2.5},
+    {"text": "나를 찾아가는 기록", "size": 8.0, "y": 0.74, "kind": "calm", "before_end": 2.3}
+  ],
+  "zoom_default": false,
+  "zoom": {"wide": 1.0, "close": 1.12, "pop": 1.06, "pop_time": 0.18, "calm_push": 1.06},
+  "sfx": {
+    "title": {"name": "휙", "volume": 0.6},
+    "emphasis": {"name": "띵", "volume": 0.3, "max_seconds": 1.5},
+    "ending": {"name": "Click (small button sound) D(971927)", "volume": 0.6}
+  },
+  "loudness": {"target_db": -20.0, "max_gain_db": 6.0, "ceiling_db": -3.0}
+}
