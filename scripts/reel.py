@@ -30,6 +30,7 @@ SKILL = os.path.dirname(HERE)
 BIN = os.path.join(HERE, "bin")
 DRAFTS = os.path.expanduser("~/Movies/CapCut/User Data/Projects/com.lveditor.draft")
 FRAME = 0.02  # 소리 크기 한 칸(20ms)
+CAPTION_LEAD = 0.05  # 자막은 실제 말소리보다 이만큼 먼저 뜬다
 SENT_END = re.compile(r"[.?!]$")
 # 이 말로 끝나면 다음 말과 붙어 있어야 자연스럽다(꾸미는 말). 줄 끝에 두지 않는다.
 CLINGY = {"그런", "어떤", "이런", "저런", "무슨", "왜", "이", "그", "저", "더", "좀", "좀만", "제", "내", "몇", "한", "두", "세", "안", "못",
@@ -324,6 +325,31 @@ def cmd_plan(a):
         q = sorted(env)
         floor, speech = q[len(q) // 5], q[len(q) * 4 // 5]
         thr = floor + (speech - floor) / 3  # 바닥 소음 가까이: 작게 낸 소리를 쉼으로 잘못 보지 않게
+        # 말소리 시작 찾기용 기준. 쉼을 잘라 낸 편집본은 조용한 칸이 적어 20%선이 말소리에 걸리므로 5%선을 바닥으로 본다
+        on_thr = q[len(q) // 20] + 4.0
+
+    def voice_onset(w):
+        """받아쓰기 낱말 구간은 [앞 낱말 끝, 이 낱말 끝]이라 앞쪽 쉼이 붙어 있다(그대로 쓰면 자막이 말보다 먼저 뜬다).
+        구간 시작부터 소리가 0.06초 넘게 이어지는 첫 곳을 찾는다. 맨 앞의 짧은 소리(0.12초 안에 끊김)는 앞 낱말 꼬리라 건너뛴다."""
+        if not env:
+            return w["s"]
+
+        def lv(t):
+            i = int(t / FRAME)
+            return env[i] if 0 <= i < len(env) else -99.0
+        t, end = w["s"], w["e"] - 0.02
+        if lv(t) >= on_thr:
+            while t < min(w["s"] + 0.12, end) and lv(t) >= on_thr:
+                t += FRAME
+            if t >= w["s"] + 0.12 or t >= end:
+                return w["s"]
+        run = 0
+        while t < end:
+            run = run + 1 if lv(t) >= on_thr else 0
+            if run >= 3:
+                return t - 2 * FRAME
+            t += FRAME
+        return w["s"]
 
     def cut_at(t):
         return next((c["n"] for c in cs if c["t0"] <= t < c["t1"]), cs[-1]["n"] if cs else 0)
@@ -333,7 +359,8 @@ def cmd_plan(a):
     for w in (w for s in json.load(open(tj, encoding="utf-8"))["segments"] for w in s["words"]):
         if not clean(w["t"]):
             continue
-        w = dict(w, cut=cut_at(w["s"] + 0.05))
+        w = dict(w, s=round(max(w["s"], voice_onset(w) - CAPTION_LEAD), 2))
+        w["cut"] = cut_at(w["s"] + 0.05)
         c = cs[w["cut"] - 1]
         stamp = "%d:%04.1f 컷%d" % (int(w["s"] // 60), w["s"] % 60, w["cut"])
         if end_guess(w) > c["t1"] + 0.05 or w["s"] < c["t0"] - 0.05 or (w["s"] - c["t0"] < 0.15 and (c["n"] > 1 or c["s0"] > 0.2)):
@@ -366,7 +393,7 @@ def cmd_plan(a):
     for ln in lines:
         c = cs[ln[0]["cut"] - 1]
         st = max(ln[0]["s"], 0.0)
-        if st - c["t0"] < 0.4 and (not out or out[-1]["cut"] != c["n"]):
+        if st - c["t0"] < 0.15 and (not out or out[-1]["cut"] != c["n"]):
             st = c["t0"]  # 컷 첫 말이면 컷과 같이 뜨게
         out.append({"text": " ".join(clean(w["t"]) for w in ln), "start": round(st, 2), "end": None, "cut": c["n"],
                     "kind": "calm" if c["n"] in calm else "main",
