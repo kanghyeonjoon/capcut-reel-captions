@@ -468,7 +468,8 @@ def find_font(title, prefer):
     return None
 
 
-def color_ranges(text, style, marks, base=None):
+def color_ranges(text, style, marks, base=None, hl_color=None):
+    """(시작, 끝, 색, 강조 글인지) 목록. marks가 없으면 숫자를 찾아 강조한다."""
     hl = style["highlight"]
     base = base or style["color"]
     if marks is None:
@@ -482,11 +483,11 @@ def color_ranges(text, style, marks, base=None):
     out, pos = [], 0
     for a, b in sorted(spans):
         if a > pos:
-            out.append((pos, a, base))
-        out.append((a, b, hl["color"]))
+            out.append((pos, a, base, False))
+        out.append((a, b, hl_color or hl["color"], True))
         pos = b
     if pos < u16(text):
-        out.append((pos, u16(text), base))
+        out.append((pos, u16(text), base, False))
     return out
 
 
@@ -494,15 +495,19 @@ def solid(color, alpha=1.0):
     return {"render_type": "solid", "solid": {"alpha": alpha, "color": list(color)}}
 
 
-def dress(mat, text, kind, size, style, folder, marks=None, color=None):
-    """글·글꼴·크기·색(숫자 강조)·테두리·그림자를 정한다. color를 주면 바탕 글자색을 바꾼다(핵심 문장)."""
+def dress(mat, text, kind, size, style, folder, marks=None, color=None, point=None):
+    """글·글꼴·크기·색(숫자 강조)·테두리·그림자를 정한다. color를 주면 바탕 글자색을 바꾼다(핵심 문장).
+    point({"words": [...], "color": [...], "size_add": 2.0})를 주면 그 낱말만 그 색으로 조금 크게 한다(낱말 포인트)."""
+    if point:
+        marks = point["words"]
     k = style["kinds"][kind]
     f = find_font(k["font"], folder) if k.get("font") else None
     c = json.loads(mat["content"])
     base = {x: v for x, v in c["styles"][0].items() if x not in ("strokes", "shadows", "range", "fill", "font", "size")}
     styles = []
-    for a, b, col in color_ranges(text, style, marks, color):
-        s = dict(base, range=[a, b], size=size, fill={"alpha": 1.0, "content": solid(col)})
+    for a, b, col, is_hl in color_ranges(text, style, marks, color, point and point.get("color")):
+        sz = size + point.get("size_add", 0.0) if point and is_hl else size
+        s = dict(base, range=[a, b], size=sz, fill={"alpha": 1.0, "content": solid(col)})
         if f:
             s["font"] = {"id": f["rid"], "path": f["path"]}
         if k.get("stroke"):
@@ -520,7 +525,7 @@ def dress(mat, text, kind, size, style, folder, marks=None, color=None):
         mat.update(font_title=f["title"], font_path=f["path"], font_resource_id=f["rid"], fonts=[dict(f["entry"], id=nid())])
 
 
-def new_text(info, tmpl, text, kind, size, y, st, en, style, folder, marks=None, color=None):
+def new_text(info, tmpl, text, kind, size, y, st, en, style, folder, marks=None, color=None, point=None):
     s = copy.deepcopy(tmpl["segment"])
     m = copy.deepcopy(tmpl["material"])
     s["id"], m["id"] = nid(), nid()
@@ -531,7 +536,7 @@ def new_text(info, tmpl, text, kind, size, y, st, en, style, folder, marks=None,
         info["materials"].setdefault(e["kind"], []).append(x)
         extras.append(x["id"])
     s["material_id"], s["extra_material_refs"] = m["id"], extras
-    dress(m, text, kind, size, style, folder, marks, color)
+    dress(m, text, kind, size, style, folder, marks, color, point)
     s["target_timerange"] = {"start": us(st), "duration": us(en) - us(st)}
     s["clip"] = dict(s["clip"], transform={"x": 0.0, "y": y})
     s["common_keyframes"] = []
@@ -607,12 +612,19 @@ def clone_seg(info, s):
     return c
 
 
+SNAP = 0.05  # 이보다 가까운 기존 컷 경계가 있으면 새로 자르지 않고 그 경계를 쓴다
+
+
 def split_at(info, track, t):
-    """트랙에서 t초를 지나는 조각을 t에서 둘로 나눈다(소리·화면은 그대로 이어진다)."""
+    """트랙에서 t초를 지나는 조각을 t에서 둘로 나눈다(소리·화면은 그대로 이어진다).
+    t가 기존 경계와 SNAP 안이면 자르지 않는다. 0.01초짜리 조각이 생기면 캡컷이 열 때 한 프레임으로 늘리며
+    뒤 조각을 밀어내 말이 사라진다(1028_1 '나 자신을'이 그렇게 잘렸다)."""
     T = us(t)
     for k, s in enumerate(track["segments"]):
         a, d = s["target_timerange"]["start"], s["target_timerange"]["duration"]
         if a < T < a + d:
+            if T - a < us(SNAP) or a + d - T < us(SNAP):
+                return
             sp = s.get("speed") or 1.0
             src = s["source_timerange"]
             b = clone_seg(info, s)
@@ -723,7 +735,8 @@ def cmd_apply(a):
             size += emph.get("size_add", 0.0)
             color = emph.get("color")
         s, mids = new_text(info, tmpl, l["text"], kind, size, l.get("y", cap_y),
-                           l["start"], l["end"], style, folder, l.get("highlight") if not color else l.get("highlight", []), color)
+                           l["start"], l["end"], style, folder, l.get("highlight") if not color else l.get("highlight", []), color,
+                           l.get("point"))
         segs.append(s)
         rec_new["materials"] += mids
     add_track(segs)
@@ -796,7 +809,7 @@ def cmd_apply(a):
         for s in main_track["segments"]:
             st = s["target_timerange"]["start"] / 1e6
             en = st + s["target_timerange"]["duration"] / 1e6
-            if any(st >= a - 0.01 and en <= b + 0.01 for a, b in cards):
+            if any(st >= a - SNAP and en <= b + SNAP for a, b in cards):
                 s["clip"] = dict(s.get("clip") or {}, alpha=0.0)
                 rec_new["card_segs"].append(s["id"])
         if cards:
