@@ -563,6 +563,63 @@ def new_sfx(info, got, at, max_seconds, volume, total):
     return s, mids
 
 
+def clone_seg(info, s):
+    """조각과 그 재료들을 새 번호로 복사한다(조각을 둘로 나눌 때)."""
+    by = index(info)
+    c = copy.deepcopy(s)
+    c["id"] = nid()
+    ids = []
+    for rid in [s["material_id"]] + list(s["extra_material_refs"]):
+        if rid not in by:
+            continue
+        kind, m = by[rid]
+        x = dict(copy.deepcopy(m), id=nid())
+        info["materials"][kind].append(x)
+        ids.append(x["id"])
+    c["material_id"], c["extra_material_refs"] = ids[0], ids[1:]
+    return c
+
+
+def split_at(info, track, t):
+    """트랙에서 t초를 지나는 조각을 t에서 둘로 나눈다(소리·화면은 그대로 이어진다)."""
+    T = us(t)
+    for k, s in enumerate(track["segments"]):
+        a, d = s["target_timerange"]["start"], s["target_timerange"]["duration"]
+        if a < T < a + d:
+            sp = s.get("speed") or 1.0
+            src = s["source_timerange"]
+            b = clone_seg(info, s)
+            s["target_timerange"] = {"start": a, "duration": T - a}
+            s["source_timerange"] = {"start": src["start"], "duration": round((T - a) * sp)}
+            b["target_timerange"] = {"start": T, "duration": a + d - T}
+            b["source_timerange"] = {"start": src["start"] + round((T - a) * sp), "duration": src["duration"] - round((T - a) * sp)}
+            b["common_keyframes"] = []
+            track["segments"].insert(k + 1, b)
+            return
+
+
+def card_spans(plan, total):
+    """plan["cards"]의 시각을 자막 줄 단위로 넓히고(그 줄 전체를 카드로), 겹치면 합친다. 카드 안 줄에는 card 표시."""
+    spans = sorted([list(c) for c in plan.get("cards", [])])
+    changed = True
+    while changed:
+        changed = False
+        for sp in spans:
+            for l in plan["lines"]:
+                if l["start"] < sp[1] - 0.02 and l["end"] > sp[0] + 0.02 and (l["start"] < sp[0] or l["end"] > sp[1]):
+                    sp[0], sp[1] = min(sp[0], l["start"]), max(sp[1], l["end"])
+                    changed = True
+    out = []
+    for sp in sorted(spans):
+        if out and sp[0] <= out[-1][1] + 0.3:
+            out[-1][1] = max(out[-1][1], sp[1])
+        else:
+            out.append([sp[0], min(sp[1], total)])
+    for l in plan["lines"]:
+        l["card"] = any(l["start"] >= a - 0.02 and l["end"] <= b + 0.02 for a, b in out)
+    return out
+
+
 def check_lines(plan, total):
     """겹침·길이·글자 수를 확인하고 고친다. 문제는 알려 준다."""
     probs = []
@@ -626,11 +683,16 @@ def cmd_apply(a):
     cap_y = style["caption"]["y"]
     segs = []
     emph = style.get("emphasis", {})
+    cards = card_spans(plan, total)
+    card_style = style.get("card", {"size": 16.0, "y": 0.0})
     for l in plan["lines"]:
         kind = l.get("kind", "main")
         size = l.get("size", style["kinds"][kind]["size"])
         color = None
-        if l.get("emphasis") and emph:  # 핵심 문장: 다른 색, 조금 크게
+        if l.get("card"):  # 검은 글자 카드: 화면 가운데 큰 노란 글자
+            kind, size, color = "main", card_style["size"], emph.get("color", [1.0, 0.83, 0.2])
+            l = dict(l, y=card_style["y"], highlight=[])
+        elif l.get("emphasis") and emph:  # 핵심 문장: 다른 색, 조금 크게
             size += emph.get("size_add", 0.0)
             color = emph.get("color")
         s, mids = new_text(info, tmpl, l["text"], kind, size, l.get("y", cap_y),
@@ -667,6 +729,9 @@ def cmd_apply(a):
         ls = plan["lines"]
         marks += [dict(fx["emphasis"], at=l["start"]) for i, l in enumerate(ls)
                   if l.get("emphasis") and "emphasis" in fx and not (i and ls[i - 1].get("emphasis"))]
+        for a, b in card_spans(plan, total) if "emphasis" in fx else []:
+            if not any(abs(m["at"] - a) < 0.5 for m in marks):
+                marks.append(dict(fx["emphasis"], at=a))
         marks += plan.get("sfx", [])
         sfx_lanes = []
         for mk in sorted(marks, key=lambda m: m["at"]):
@@ -690,6 +755,25 @@ def cmd_apply(a):
             rec_new["tracks"].append(tr["id"])
         if marks:
             say("효과음 %d개" % sum(len(ln) for ln in sfx_lanes))
+
+    # 검은 글자 카드: 그 구간 영상만 감춘다(소리는 그대로, 위아래 검은 캔버스와 이어져 화면이 검어진다)
+    main_track = max((t for t in info["tracks"] if t["type"] == "video"), key=lambda t: len(t["segments"]), default=None)
+    if main_track is not None:
+        for s in main_track["segments"]:
+            if s["id"] in rec.get("card_segs", []):
+                s["clip"] = dict(s.get("clip") or {}, alpha=1.0)
+        for a, b in cards:
+            split_at(info, main_track, a)
+            split_at(info, main_track, b)
+        rec_new["card_segs"] = []
+        for s in main_track["segments"]:
+            st = s["target_timerange"]["start"] / 1e6
+            en = st + s["target_timerange"]["duration"] / 1e6
+            if any(st >= a - 0.01 and en <= b + 0.01 for a, b in cards):
+                s["clip"] = dict(s.get("clip") or {}, alpha=0.0)
+                rec_new["card_segs"].append(s["id"])
+        if cards:
+            say("검은 글자 카드 %d개: %s" % (len(cards), ", ".join("%.1f~%.1f초" % (a, b) for a, b in cards)))
 
     # 컷마다 넓게/가깝게 번갈아 + 첫 순간 살짝 크게, 감성 컷은 천천히 다가감. 소리 키우기.
     # 사람이 손댄 컷(이미 확대·키프레임·소리를 바꾼 컷)은 그대로 둔다.
