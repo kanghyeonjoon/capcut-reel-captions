@@ -441,8 +441,9 @@ def find_font(title, prefer):
     return None
 
 
-def color_ranges(text, style, marks):
+def color_ranges(text, style, marks, base=None):
     hl = style["highlight"]
+    base = base or style["color"]
     if marks is None:
         marks = [m.group(0).strip() for m in re.finditer(hl["regex"], text) if m.group(0).strip()]
     spans, used = [], 0
@@ -454,11 +455,11 @@ def color_ranges(text, style, marks):
     out, pos = [], 0
     for a, b in sorted(spans):
         if a > pos:
-            out.append((pos, a, style["color"]))
+            out.append((pos, a, base))
         out.append((a, b, hl["color"]))
         pos = b
     if pos < u16(text):
-        out.append((pos, u16(text), style["color"]))
+        out.append((pos, u16(text), base))
     return out
 
 
@@ -466,15 +467,15 @@ def solid(color, alpha=1.0):
     return {"render_type": "solid", "solid": {"alpha": alpha, "color": list(color)}}
 
 
-def dress(mat, text, kind, size, style, folder, marks=None):
-    """글·글꼴·크기·색(숫자 강조)·테두리·그림자를 정한다."""
+def dress(mat, text, kind, size, style, folder, marks=None, color=None):
+    """글·글꼴·크기·색(숫자 강조)·테두리·그림자를 정한다. color를 주면 바탕 글자색을 바꾼다(핵심 문장)."""
     k = style["kinds"][kind]
     f = find_font(k["font"], folder) if k.get("font") else None
     c = json.loads(mat["content"])
     base = {x: v for x, v in c["styles"][0].items() if x not in ("strokes", "shadows", "range", "fill", "font", "size")}
     styles = []
-    for a, b, color in color_ranges(text, style, marks):
-        s = dict(base, range=[a, b], size=size, fill={"alpha": 1.0, "content": solid(color)})
+    for a, b, col in color_ranges(text, style, marks, color):
+        s = dict(base, range=[a, b], size=size, fill={"alpha": 1.0, "content": solid(col)})
         if f:
             s["font"] = {"id": f["rid"], "path": f["path"]}
         if k.get("stroke"):
@@ -492,7 +493,7 @@ def dress(mat, text, kind, size, style, folder, marks=None):
         mat.update(font_title=f["title"], font_path=f["path"], font_resource_id=f["rid"], fonts=[dict(f["entry"], id=nid())])
 
 
-def new_text(info, tmpl, text, kind, size, y, st, en, style, folder, marks=None):
+def new_text(info, tmpl, text, kind, size, y, st, en, style, folder, marks=None, color=None):
     s = copy.deepcopy(tmpl["segment"])
     m = copy.deepcopy(tmpl["material"])
     s["id"], m["id"] = nid(), nid()
@@ -503,7 +504,7 @@ def new_text(info, tmpl, text, kind, size, y, st, en, style, folder, marks=None)
         info["materials"].setdefault(e["kind"], []).append(x)
         extras.append(x["id"])
     s["material_id"], s["extra_material_refs"] = m["id"], extras
-    dress(m, text, kind, size, style, folder, marks)
+    dress(m, text, kind, size, style, folder, marks, color)
     s["target_timerange"] = {"start": us(st), "duration": us(en) - us(st)}
     s["clip"] = dict(s["clip"], transform={"x": 0.0, "y": y})
     s["common_keyframes"] = []
@@ -624,10 +625,16 @@ def cmd_apply(a):
 
     cap_y = style["caption"]["y"]
     segs = []
+    emph = style.get("emphasis", {})
     for l in plan["lines"]:
         kind = l.get("kind", "main")
-        s, mids = new_text(info, tmpl, l["text"], kind, l.get("size", style["kinds"][kind]["size"]), l.get("y", cap_y),
-                           l["start"], l["end"], style, folder, l.get("highlight"))
+        size = l.get("size", style["kinds"][kind]["size"])
+        color = None
+        if l.get("emphasis") and emph:  # 핵심 문장: 다른 색, 조금 크게
+            size += emph.get("size_add", 0.0)
+            color = emph.get("color")
+        s, mids = new_text(info, tmpl, l["text"], kind, size, l.get("y", cap_y),
+                           l["start"], l["end"], style, folder, l.get("highlight") if not color else l.get("highlight", []), color)
         segs.append(s)
         rec_new["materials"] += mids
     add_track(segs)
@@ -656,7 +663,10 @@ def cmd_apply(a):
         endings = [t for t in shown if t["start"] > 1.0]
         if endings and "ending" in fx:
             marks.append(dict(fx["ending"], at=endings[0]["start"]))
-        marks += [dict(fx["emphasis"], at=l["start"]) for l in plan["lines"] if l.get("emphasis") and "emphasis" in fx]
+        # 강조 효과음은 이어진 핵심 문장 줄들의 첫 줄에만
+        ls = plan["lines"]
+        marks += [dict(fx["emphasis"], at=l["start"]) for i, l in enumerate(ls)
+                  if l.get("emphasis") and "emphasis" in fx and not (i and ls[i - 1].get("emphasis"))]
         marks += plan.get("sfx", [])
         sfx_lanes = []
         for mk in sorted(marks, key=lambda m: m["at"]):
